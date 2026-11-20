@@ -92,6 +92,80 @@ class KeypointTests(unittest.TestCase):
         )
 
 
+def body_raw(points_px, hand_px, width, height):
+    """Raw keypoints for a synthetic person given in PIXELS on a width x height picture."""
+    raw = np.zeros(F.FEATURE_DIM, dtype=np.float32)
+    pose = np.zeros((33, 4), dtype=np.float32)
+    pose[:, 0] = points_px[:, 0] / width
+    pose[:, 1] = points_px[:, 1] / height
+    pose[:, 3] = 0.9
+    raw[F.POSE_SLICE] = pose.flatten()
+    hand = np.zeros((21, 3), dtype=np.float32)
+    hand[:, 0] = hand_px[:, 0] / width
+    hand[:, 1] = hand_px[:, 1] / height
+    raw[F.HAND_A_SLICE] = hand.flatten()
+    return raw
+
+
+class NormalizeTests(unittest.TestCase):
+    rng = np.random.default_rng(7)
+    body = rng.random((33, 2)) * 200 + 100
+    body[F.L_SHOULDER] = (360, 150)
+    body[F.R_SHOULDER] = (280, 150)
+    hand = rng.random((21, 2)) * 40 + (200, 220)
+
+    def test_shape_and_version(self):
+        self.assertEqual(F.FEATURE_VERSION, "pose-hands-v2")
+        raw = body_raw(self.body, self.hand, 640, 360)
+        self.assertEqual(F.normalize(raw, 640 / 360).shape, (258,))
+        self.assertEqual(F.normalize(np.stack([raw, raw]), 640 / 360).shape, (2, 258))
+
+    def test_same_person_moved_and_scaled_gives_same_features(self):
+        a = F.normalize(body_raw(self.body, self.hand, 640, 360), 640 / 360)
+        moved = (self.body - 300) * 0.6 + (420, 230)
+        moved_hand = (self.hand - 300) * 0.6 + (420, 230)
+        b = F.normalize(body_raw(moved, moved_hand, 640, 360), 640 / 360)
+        np.testing.assert_allclose(a, b, atol=1e-4)
+
+    def test_portrait_and_landscape_give_same_features(self):
+        a = F.normalize(body_raw(self.body, self.hand, 640, 360), 640 / 360)
+        b = F.normalize(body_raw(self.body, self.hand, 480, 854), 480 / 854)
+        np.testing.assert_allclose(a, b, atol=1e-4)
+
+    def test_lean_is_levelled(self):
+        a = F.normalize(body_raw(self.body, self.hand, 640, 360), 640 / 360)
+        t = np.deg2rad(12)
+        rot = np.array([[np.cos(t), -np.sin(t)], [np.sin(t), np.cos(t)]])
+        c = np.array([320, 180])
+        b = F.normalize(body_raw((self.body - c) @ rot.T + c, (self.hand - c) @ rot.T + c, 640, 360), 640 / 360)
+        np.testing.assert_allclose(a, b, atol=1e-4)
+
+    def test_missing_parts_stay_zero(self):
+        raw = body_raw(self.body, self.hand, 640, 360)
+        raw[F.HAND_A_SLICE] = 0
+        out = F.normalize(raw, 640 / 360)
+        self.assertFalse(np.any(out[F.HANDS_SLICE]))
+        self.assertFalse(F.hands_present(out))
+        self.assertFalse(np.any(F.normalize(np.zeros(258, np.float32))))
+
+    def test_unseen_pose_points_are_zeroed(self):
+        raw = body_raw(self.body, self.hand, 640, 360)
+        pose = raw[F.POSE_SLICE].reshape(33, 4)
+        pose[25:, 3] = 0.1          # knees, ankles, feet guessed below the picture
+        raw[F.POSE_SLICE] = pose.flatten()
+        out = F.normalize(raw, 640 / 360)[F.POSE_SLICE].reshape(33, 4)
+        self.assertFalse(np.any(out[25:, :3]))
+        self.assertTrue(np.all(out[:25, :2].any(axis=1) | (pose[:25, :2] == 0).all(axis=1)))
+
+    def test_mirrored_person_is_not_turned_upside_down(self):
+        a = F.normalize(body_raw(self.body, self.hand, 640, 360), 640 / 360)
+        flip = lambda p: np.stack([640 - p[:, 0], p[:, 1]], axis=1)  # noqa: E731
+        b = F.normalize(body_raw(flip(self.body), flip(self.hand), 640, 360), 640 / 360)
+        pa, pb = a[F.POSE_SLICE].reshape(33, 4), b[F.POSE_SLICE].reshape(33, 4)
+        np.testing.assert_allclose(pa[:, 1], pb[:, 1], atol=1e-4)    # up stays up
+        np.testing.assert_allclose(pa[:, 0], -pb[:, 0], atol=1e-4)   # left and right swap
+
+
 class FakeModel:
     def __init__(self, input_shape, output_shape):
         self.input_shape = input_shape
@@ -256,6 +330,28 @@ class PushFrameTests(unittest.TestCase):
         infer.push_frame(np.zeros((480, 640, 3), np.uint8))   # 4:3 -> cropped, not stretched
         infer.push_frame(np.zeros((1080, 1920, 3), np.uint8))  # 16:9 -> resized only
         self.assertEqual(infer._detector.seen_shapes, [(360, 640, 3), (360, 640, 3)])
+
+    def test_lstm_gets_normalised_features_and_preview_gets_raw(self):
+        seen = []
+        infer = self.build(predict_fn=lambda x: seen.append(x) or np.array([[0.1, 0.8, 0.1]], np.float32))
+        frame = np.zeros((90, 160, 3), np.uint8)
+        for _ in range(3):
+            infer.push_frame(frame)
+        raw = features(hand=True)
+        np.testing.assert_allclose(seen[0][0, -1], F.normalize(raw, 160 / 90), atol=1e-6)
+        np.testing.assert_array_equal(infer.last_keypoints, raw)
+
+    def test_idle_class_gives_no_word_and_allows_repeat(self):
+        infer = self.build()
+        infer.actions = ["hello", "_idle", "thanks"]
+        probs = {"p": [0.1, 0.1, 0.8]}
+        infer.model = lambda x, training=False: np.array([probs["p"]], np.float32)
+        self.assertEqual(self.feed(infer, 4), ["thanks"])
+        probs["p"] = [0.05, 0.9, 0.05]
+        self.assertEqual(self.feed(infer, 4), [])
+        self.assertIsNone(infer._last_gloss)
+        probs["p"] = [0.1, 0.1, 0.8]
+        self.assertEqual(self.feed(infer, 4), ["thanks"])
 
     def test_predict_fn_is_used_instead_of_model(self):
         calls = []

@@ -15,10 +15,13 @@ import asl_features as F
 # Keypoints come from asl_features.py (MediaPipe Pose + Hands, no face mesh): 258 values per frame.
 # That file is shared, unchanged, with the training notebook so training and live inference match.
 FEATURE_DIM = F.FEATURE_DIM
+# Classes whose name starts with this are "no sign" classes (the training notebook's `_idle`).
+IDLE_PREFIX = "_"
 
 
 def extract_keypoints(pose_result, hands_result) -> np.ndarray:
-    """258-value feature vector from MediaPipe Pose and Hands results (see asl_features.py)."""
+    """Raw 258-value keypoints from MediaPipe Pose and Hands results (see asl_features.py);
+    push_frame normalises them before the LSTM."""
     return F.extract_keypoints(pose_result, hands_result)
 
 
@@ -308,7 +311,7 @@ class HolisticLSTMInfer:
         t2 = time.perf_counter()
 
         self.last_keypoints = keypoints
-        self._sequence.append(keypoints)
+        self._sequence.append(F.normalize(keypoints, aspect=img.shape[1] / max(img.shape[0], 1)))
         self._sequence = self._sequence[-self.sequence_length :]
         self._hands.append(F.hands_present(keypoints))
         self._hands = self._hands[-self.sequence_length :]
@@ -347,6 +350,11 @@ class HolisticLSTMInfer:
             return None
 
         gloss = self.actions[idx]
+        if gloss.startswith(IDLE_PREFIX):
+            # The "no sign" class (resting or in-between hands): no word, and the same word may follow.
+            self._last_gloss = None
+            self._idle = 0
+            return None
         if self._last_gloss == gloss:
             # Still holding the same sign; not a gap.
             self._idle = 0

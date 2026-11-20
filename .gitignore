@@ -167,6 +167,9 @@ docker-data/
 # Project Specific
 # ===========================
 # Add project-specific ignores below
+# training/train_model.ipynb: keypoint cache and trained models (copy a model into jetson-code/models/ to keep it)
+training/_keypoints/
+training/output/
 # ===========================
 # ESP-IDF / Espressif
 # ===========================
