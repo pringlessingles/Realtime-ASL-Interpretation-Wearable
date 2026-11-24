@@ -42,6 +42,32 @@ cd /workspace/group-project-team-narm/jetson-code
 python3 decode_jpeg_tcp.py
 ```
 
+## Laptop webcam test (Windows)
+
+Use 64-bit Python 3.10 or 3.11. Run these PowerShell commands from the repository root
+after installing Python 3.11 (the first command assumes the standard per-user installer location):
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Python\Python311\python.exe" -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r jetson-code/requirements-local.txt
+.\.venv\Scripts\python.exe jetson-code/live_local.py --check
+.\.venv\Scripts\python.exe jetson-code/live_local.py
+```
+
+The default is `asl_32word_test1`. Press **Q** or **Esc** in the preview to quit. To test the second model:
+
+```powershell
+.\.venv\Scripts\python.exe jetson-code/live_local.py --model jetson-code/models/asl_32word_test2/asl_32word_test2.h5
+```
+
+Add `--camera 1` if the default webcam does not open. The tester uses the exported metadata,
+feature normalizer, hand gate and stability rules from the Jetson inference code. It samples
+unmirrored webcam frames at the model's effective frame rate and displays the current candidate,
+last accepted sign and measured sampling rate. Keep the upper body and both hands visible;
+allow about two seconds to fill the initial window, and return to a neutral pose between signs.
+`--check` only verifies model loading and a synthetic inference, without opening the camera;
+it does not measure recognition accuracy. Laptop timing is separate from Jetson timing.
+
 ## Documented runtime: container + Jetson AI Lab wheels (what we use)
 
 This README matches the setup that was validated on **JetPack 6** using:

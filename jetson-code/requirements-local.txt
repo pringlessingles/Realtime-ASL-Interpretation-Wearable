@@ -1,0 +1,12 @@
+# Laptop webcam inference: Python 3.10 or 3.11, 64-bit.
+# Use a fresh environment; this OpenCV build includes the preview GUI.
+tensorflow==2.15.1
+numpy==1.26.4
+protobuf==4.25.9
+mediapipe==0.10.18
+opencv-contrib-python==4.10.0.84
+# Keep MediaPipe's JAX dependencies compatible with TensorFlow 2.15's ml-dtypes.
+jax==0.4.23
+jaxlib==0.4.23
+scipy==1.11.4
+matplotlib==3.8.4
